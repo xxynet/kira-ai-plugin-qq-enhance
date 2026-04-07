@@ -354,6 +354,8 @@ class QQEnhancePlugin(BasePlugin):
     async def handle_typing_indication(self, event: KiraMessageBatchEvent):
         if not self.typing_indicator_enabled:
             return
+        if event.adapter.platform != "QQ":
+            return
         # 只处理私聊
         if event.is_group_message():
             return
@@ -371,6 +373,8 @@ class QQEnhancePlugin(BasePlugin):
     @on.llm_response(priority=Priority.HIGH)
     async def on_llm_response(self, event: KiraMessageBatchEvent, resp: LLMResponse):
         if not self.typing_indicator_enabled:
+            return
+        if event.adapter.platform != "QQ":
             return
         # 只处理私聊
         if event.is_group_message():
