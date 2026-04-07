@@ -144,6 +144,8 @@ class QQEnhancePlugin(BasePlugin):
         self.delete_msg_enabled = self.plugin_cfg.get("delete_msg_enabled", True)
         self.group_ban_enabled = self.plugin_cfg.get("group_ban_enabled", True)
         self.qq_enhance_prompt = self.plugin_cfg.get("qq_enhance_prompt", "")
+        self.perceive_group_ban = self.plugin_cfg.get("perceive_group_ban", True)
+        self.perceive_group_increase = self.plugin_cfg.get("perceive_group_increase", True)
 
         # ----- Sticker Control 配置 -----
         self.sticker_control_enabled = self.plugin_cfg.get("sticker_control_enabled", False)
@@ -176,6 +178,52 @@ class QQEnhancePlugin(BasePlugin):
         self._delay_tasks.clear()
         self._loop_tasks.clear()
         self._typing_running.clear()
+
+    @on.im_message(priority=Priority.HIGH + 1)
+    async def perceive_notice(self, event: KiraMessageEvent):
+        if event.adapter.platform != "QQ":
+            return
+        if not event.is_notice:
+            return
+
+        msg = event.message.raw_message
+        if not isinstance(msg, dict):
+            return
+        message_chain = event.message.chain
+
+        notice_type = msg.get("notice_type")
+        sub_type = msg.get("sub_type")
+        self_id = msg.get("self_id")
+        user_id = msg.get("user_id")
+        target_id = msg.get("target_id")
+        group_id = msg.get("group_id")
+
+        if notice_type == "group_ban" and self_id == user_id and self.perceive_group_ban:
+            event.message.is_mentioned = True
+
+            ban_duration = msg.get("duration")
+            ban_operator_id = msg.get("operator_id")
+            ban_group_id = msg.get("group_id")
+            if sub_type == "ban":
+                message_chain.text(f"[System 用户{ban_operator_id}禁言了你{ban_duration}秒]")
+
+            elif sub_type == "lift_ban":  # 人为解除禁言
+                # ban_duration 永远是0，invalid
+                message_chain.text(f"[System 你之前被禁言了，用户{ban_operator_id}解除了你的禁言]")
+            else:
+                return
+
+        # --------- 新成员进群 ---------
+        elif notice_type == "group_increase" and self.perceive_group_increase:
+            # and msg["sub_type"] == "approve"
+            if not group_id:
+                return
+
+            event.message.is_mentioned = True
+
+            message_chain.text(f"[System 用户{user_id}加入了群聊]")
+        else:
+            pass
 
     # ---------- 注入工具 ----------
     @on.llm_request()
