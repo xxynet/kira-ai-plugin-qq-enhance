@@ -397,6 +397,10 @@ class QQEnhancePlugin(BasePlugin):
             self._loop_tasks[session].cancel()
         self._loop_tasks.pop(session, None)
         self._typing_running.pop(session, None)
+        # 取消延迟任务，防止在sleep结束后启动新循环
+        if session in self._delay_tasks and not self._delay_tasks[session].done():
+            self._delay_tasks[session].cancel()
+        self._delay_tasks.pop(session, None)
 
     @on.im_batch_message(priority=Priority.HIGH)
     async def handle_typing_indication(self, event: KiraMessageBatchEvent):
