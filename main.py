@@ -144,6 +144,8 @@ class QQEnhancePlugin(BasePlugin):
         self.delete_msg_enabled = self.plugin_cfg.get("delete_msg_enabled", True)
         self.group_ban_enabled = self.plugin_cfg.get("group_ban_enabled", True)
         self.qq_enhance_prompt = self.plugin_cfg.get("qq_enhance_prompt", "")
+        self.perceive_group_ban = self.plugin_cfg.get("perceive_group_ban", True)
+        self.perceive_group_increase = self.plugin_cfg.get("perceive_group_increase", True)
 
         # ----- Sticker Control 配置 -----
         self.sticker_control_enabled = self.plugin_cfg.get("sticker_control_enabled", False)
@@ -177,6 +179,52 @@ class QQEnhancePlugin(BasePlugin):
         self._loop_tasks.clear()
         self._typing_running.clear()
 
+    @on.im_message(priority=Priority.HIGH + 1)
+    async def perceive_notice(self, event: KiraMessageEvent):
+        if event.adapter.platform != "QQ":
+            return
+        if not event.is_notice:
+            return
+
+        msg = event.message.raw_message
+        if not isinstance(msg, dict):
+            return
+        message_chain = event.message.chain
+
+        notice_type = msg.get("notice_type")
+        sub_type = msg.get("sub_type")
+        self_id = msg.get("self_id")
+        user_id = msg.get("user_id")
+        target_id = msg.get("target_id")
+        group_id = msg.get("group_id")
+
+        if notice_type == "group_ban" and self_id == user_id and self.perceive_group_ban:
+            event.message.is_mentioned = True
+
+            ban_duration = msg.get("duration")
+            ban_operator_id = msg.get("operator_id")
+            ban_group_id = msg.get("group_id")
+            if sub_type == "ban":
+                message_chain.text(f"[System 用户{ban_operator_id}禁言了你{ban_duration}秒]")
+
+            elif sub_type == "lift_ban":  # 人为解除禁言
+                # ban_duration 永远是0，invalid
+                message_chain.text(f"[System 你之前被禁言了，用户{ban_operator_id}解除了你的禁言]")
+            else:
+                return
+
+        # --------- 新成员进群 ---------
+        elif notice_type == "group_increase" and self.perceive_group_increase:
+            # and msg["sub_type"] == "approve"
+            if not group_id:
+                return
+
+            event.message.is_mentioned = True
+
+            message_chain.text(f"[System 用户{user_id}加入了群聊]")
+        else:
+            pass
+
     # ---------- 注入工具 ----------
     @on.llm_request()
     async def inject_qq_enhance_tools(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
@@ -209,30 +257,19 @@ class QQEnhancePlugin(BasePlugin):
         if not message_chains:
             return
 
-        # 1. 过滤掉只有 Reply 的消息链
-        filtered_chains = []
-        for chain in message_chains:
-            if len(chain) == 1 and isinstance(chain[0], Reply):
-                logger.debug(f"丢弃只有引用的消息块: {chain[0]}")
-                continue
-            filtered_chains.append(chain)
-        message_chains[:] = filtered_chains
-
-        if not message_chains:
-            return
-
-        # 2. 处理 sticker
-        sticker_chains = []
         new_chains = []
 
         for chain in message_chains:
             elements = chain.message_list
+            # 找出所有表情的位置
             sticker_indices = [i for i, e in enumerate(elements) if isinstance(e, Sticker)]
+
             if not sticker_indices:
+                # 没有表情，直接保留原链
                 new_chains.append(chain)
                 continue
 
-            # 决定保留哪些 sticker
+            # 1. 按概率决定哪些表情保留
             keep_indices = []
             for idx in sticker_indices:
                 if random.random() < self.sticker_probability:
@@ -240,22 +277,30 @@ class QQEnhancePlugin(BasePlugin):
                 else:
                     logger.debug(f"删除 sticker: {elements[idx]}")
 
-            # 从原链中移除所有 sticker（无论保留与否）
-            new_elements = [e for i, e in enumerate(elements) if i not in sticker_indices]
-            if new_elements:
-                new_chains.append(MessageChain(new_elements))
+            # 2. 原链中移除所有表情（无论是否保留），剩下的元素组成一个新链
+            remaining_elements = [e for i, e in enumerate(elements) if i not in sticker_indices]
 
-            # 保留的 sticker 单独成链
+            # 3. 处理剩余链：如果它只包含一个 Reply（即空引用），则丢弃；否则加入
+            if remaining_elements:
+                if len(remaining_elements) == 1 and isinstance(remaining_elements[0], Reply):
+                    logger.debug(f"丢弃只有引用的消息块: {remaining_elements[0]}")
+                else:
+                    new_chains.append(MessageChain(remaining_elements))
+
+            # 4. 每个保留的表情单独成为一个消息链（独立成行）
             for idx in keep_indices:
-                sticker_chains.append(MessageChain([elements[idx]]))
+                new_chains.append(MessageChain([elements[idx]]))
 
-        # 3. 随机插入表情链
+        # 5. 随机调整表情链的位置（如果启用）
         if self.random_position:
-            for sticker_chain in sticker_chains:
+            # 分离出表情链和非表情链
+            non_sticker_chains = [c for c in new_chains if not (len(c.message_list) == 1 and isinstance(c.message_list[0], Sticker))]
+            sticker_chains = [c for c in new_chains if len(c.message_list) == 1 and isinstance(c.message_list[0], Sticker)]
+            new_chains = non_sticker_chains.copy()
+            for sc in sticker_chains:
                 pos = random.randint(0, len(new_chains))
-                new_chains.insert(pos, sticker_chain)
-        else:
-            new_chains.extend(sticker_chains)
+                new_chains.insert(pos, sc)
+        # 如果未启用随机位置，表情链会按顺序放在最后（默认行为）
 
         message_chains.clear()
         message_chains.extend(new_chains)
@@ -354,6 +399,8 @@ class QQEnhancePlugin(BasePlugin):
     async def handle_typing_indication(self, event: KiraMessageBatchEvent):
         if not self.typing_indicator_enabled:
             return
+        if event.adapter.platform != "QQ":
+            return
         # 只处理私聊
         if event.is_group_message():
             return
@@ -371,6 +418,8 @@ class QQEnhancePlugin(BasePlugin):
     @on.llm_response(priority=Priority.HIGH)
     async def on_llm_response(self, event: KiraMessageBatchEvent, resp: LLMResponse):
         if not self.typing_indicator_enabled:
+            return
+        if event.adapter.platform != "QQ":
             return
         # 只处理私聊
         if event.is_group_message():
