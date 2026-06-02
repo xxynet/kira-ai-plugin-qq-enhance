@@ -112,7 +112,7 @@ class GroupBanTool(BaseTool):
         "type": "object",
         "properties": {
             "user_id": {"type": "string", "description": "要禁言的成员的QQ号"},
-            "duration": {"type": "string", "description": "禁言时长（秒），默认600秒（10分钟），设为0秒即为解除禁言"},
+            "duration": {"type": "integer", "description": "禁言时长（秒），默认600秒（10分钟），设为0秒即为解除禁言", "default": 600},
         },
         "required": ["user_id", "duration"]
     }
@@ -120,14 +120,14 @@ class GroupBanTool(BaseTool):
     def __init__(self, ctx: PluginContext):
         super().__init__(ctx=ctx)
 
-    async def execute(self, event: KiraMessageBatchEvent, *args, user_id: str, duration: str, **kwargs) -> str:
+    async def execute(self, event: KiraMessageBatchEvent, *args, user_id: str, duration: int = 600, **kwargs) -> str:
         ada_name = event.session.adapter_name
         ada = self.ctx.adapter_mgr.get_adapter(ada_name)
         client = ada.get_client()
         params = {
             "group_id": event.session.sid,
             "user_id": user_id,
-            "duration": duration or 600
+            "duration": duration
         }
         res = await client.send_action("set_group_ban", params)
         return res
@@ -181,6 +181,7 @@ class QQEnhancePlugin(BasePlugin):
 
     @on.im_message(priority=Priority.HIGH + 1)
     async def perceive_notice(self, event: KiraMessageEvent):
+        """感知QQ特有的notice事件，如群禁言、成员增加等，并将相关信息附加到消息链中，供后续使用"""
         if event.adapter.platform != "QQ":
             return
         if not event.is_notice:
@@ -228,11 +229,12 @@ class QQEnhancePlugin(BasePlugin):
     # ---------- 注入工具 ----------
     @on.llm_request()
     async def inject_qq_enhance_tools(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
+        """根据配置注入QQ相关工具，并将工具说明添加到 system prompt 中"""
         platform = event.adapter.platform
         if not platform == "QQ":
             return
 
-        if self.emoji_react_enabled:
+        if self.emoji_react_enabled and event.is_group_message():
             req.tool_set.add(SetEmojiTool(ctx=self.ctx))
             # 注入工具说明到 system prompt
             for p in req.system_prompt:
@@ -246,7 +248,7 @@ class QQEnhancePlugin(BasePlugin):
         if self.delete_msg_enabled:
             req.tool_set.add(DeleteMsgTool(ctx=self.ctx))
 
-        if self.group_ban_enabled and event.session.session_type == "gm":
+        if self.group_ban_enabled and event.is_group_message():
             req.tool_set.add(GroupBanTool(ctx=self.ctx))
 
     # ---------- Sticker Control 功能 ----------
