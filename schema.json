@@ -29,6 +29,18 @@
         "default": "### 贴表情工具使用说明\n你需要在聊天中自然使用贴表情功能",
         "hint": "对AI使用QQ增强相关功能的说明"
     },
+    "perceive_group_ban": {
+        "name": "感知禁言",
+        "type": "switch",
+        "default": true,
+        "hint": "开启后，AI会知道自己被禁言"
+    },
+    "perceive_group_increase": {
+        "name": "感知加群",
+        "type": "switch",
+        "default": true,
+        "hint": "开启后，AI会知道有新用户加入群聊"
+    },
     "sticker_control_enabled": {
         "name": "启用表情控制",
         "type": "switch",
