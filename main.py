@@ -125,7 +125,7 @@ class GroupBanTool(BaseTool):
         ada = self.ctx.adapter_mgr.get_adapter(ada_name)
         client = ada.get_client()
         params = {
-            "group_id": event.session.sid,
+            "group_id": event.session.session_id,
             "user_id": user_id,
             "duration": duration
         }

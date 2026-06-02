@@ -1,7 +1,7 @@
 {
     "display_name": "QQ增强",
     "plugin_id": "kira-ai-plugin-qq-enhance",
-    "version": "1.3.2",
+    "version": "1.3.3",
     "author": "xxynet, znq19",
     "description": "增强数字生命在QQ平台的能力：贴表情、资料卡点赞、撤回、禁言、表情控制、私聊输入中状态",
     "repo": "https://github.com/xxynet/kira-ai-plugin-qq-enhance"
