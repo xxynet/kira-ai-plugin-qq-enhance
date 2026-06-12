@@ -133,6 +133,44 @@ class GroupBanTool(BaseTool):
         return res
 
 
+class SendMusicCardTool(BaseTool):
+    name = "send_music_card"
+    description = "发送音乐卡片到当前QQ聊天"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "platform": {"type": "string", "description": "音乐平台类型，qq为QQ音乐，163为网易云音乐", "enum": ["qq", "163", "kugou", "migu", "kuwo"]},
+            "music_id": {"type": "string", "description": "音乐ID，具体平台的ID格式不同，请根据平台要求提供正确的ID"}
+        },
+        "required": ["platform", "music_id"]
+    }
+
+    def __init__(self, ctx: PluginContext):
+        super().__init__(ctx=ctx)
+
+    async def execute(self, event: KiraMessageBatchEvent, *args, platform: str, music_id: str, **kwargs) -> str:
+        ada_name = event.session.adapter_name
+        ada = self.ctx.adapter_mgr.get_adapter(ada_name)
+        client = ada.get_client()
+
+        is_group = event.is_group_message()
+
+        params = {
+            "group_id" if is_group else "user_id": event.session.session_id,
+            "message": [
+                {
+                    "type": "music",
+                    "data": {
+                        "type": platform,
+                        "id": music_id
+                    }
+                }
+            ]
+        }
+        res = await client.send_action("send_msg", params)
+        return res
+
+
 # ==================== 主插件类（合并所有功能） ====================
 class QQEnhancePlugin(BasePlugin):
     def __init__(self, ctx, cfg: dict):
@@ -146,6 +184,7 @@ class QQEnhancePlugin(BasePlugin):
         self.qq_enhance_prompt = self.plugin_cfg.get("qq_enhance_prompt", "")
         self.perceive_group_ban = self.plugin_cfg.get("perceive_group_ban", True)
         self.perceive_group_increase = self.plugin_cfg.get("perceive_group_increase", True)
+        self.music_card_enabled = self.plugin_cfg.get("music_card_enabled", False)
 
         # ----- Sticker Control 配置 -----
         self.sticker_control_enabled = self.plugin_cfg.get("sticker_control_enabled", False)
@@ -163,9 +202,7 @@ class QQEnhancePlugin(BasePlugin):
         self._typing_running = {}
 
     async def initialize(self):
-        logger.info(f"QQEnhancePlugin initialized: "
-                    f"sticker_control={self.sticker_control_enabled}, "
-                    f"typing_indicator={self.typing_indicator_enabled}")
+        logger.info(f"QQEnhancePlugin initialized")
 
     async def terminate(self):
         # 清理 Typing Indicator 任务
@@ -250,6 +287,9 @@ class QQEnhancePlugin(BasePlugin):
 
         if self.group_ban_enabled and event.is_group_message():
             req.tool_set.add(GroupBanTool(ctx=self.ctx))
+
+        if self.music_card_enabled:
+            req.tool_set.add(SendMusicCardTool(ctx=self.ctx))
 
     # ---------- Sticker Control 功能 ----------
     @on.after_xml_parse(priority=Priority.HIGH)

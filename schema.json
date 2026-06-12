@@ -41,6 +41,12 @@
         "default": true,
         "hint": "开启后，AI会知道有新用户加入群聊"
     },
+    "music_card_enabled": {
+        "name": "启用音乐卡片",
+        "type": "switch",
+        "default": false,
+        "hint": "启用后，AI可以发送音乐卡片到QQ聊天，需要配合提供音乐搜索服务的插件使用"
+    },
     "sticker_control_enabled": {
         "name": "启用表情控制",
         "type": "switch",
