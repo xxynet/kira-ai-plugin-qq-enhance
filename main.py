@@ -195,10 +195,12 @@ class QQEnhancePlugin(BasePlugin):
         self.typing_indicator_enabled = self.plugin_cfg.get("typing_indicator_enabled", True)
         self.typing_delay_seconds = float(self.plugin_cfg.get("typing_delay_seconds", 2.0))
         self.typing_interval_seconds = float(self.plugin_cfg.get("typing_interval_seconds", 2.0))
+        self.typing_max_seconds = float(self.plugin_cfg.get("typing_max_seconds", 60.0))
 
         # 用于 Typing Indicator 的状态管理
         self._delay_tasks = {}
         self._loop_tasks = {}
+        self._max_tasks = {}
         self._typing_running = {}
 
     async def initialize(self):
@@ -212,8 +214,12 @@ class QQEnhancePlugin(BasePlugin):
         for task in self._loop_tasks.values():
             if not task.done():
                 task.cancel()
+        for task in self._max_tasks.values():
+            if not task.done():
+                task.cancel()
         self._delay_tasks.clear()
         self._loop_tasks.clear()
+        self._max_tasks.clear()
         self._typing_running.clear()
 
     @on.im_message(priority=Priority.HIGH + 1)
@@ -363,7 +369,7 @@ class QQEnhancePlugin(BasePlugin):
         logger.debug(f"Sticker 处理完成，消息块数量: {len(message_chains)}")
 
     # ---------- Typing Indicator 功能 ----------
-    async def _send_typing(self, session: Session):
+    async def _send_typing(self, session: Session, log: bool = True):
         if not self.typing_indicator_enabled:
             return
 
@@ -387,7 +393,8 @@ class QQEnhancePlugin(BasePlugin):
         if hasattr(client, 'send_action') and callable(client.send_action):
             try:
                 await client.send_action(action, params)
-                logger.debug(f"Typing sent to {session.sid}")
+                if log:
+                    logger.debug(f"Typing sent to {session.sid}")
                 return
             except Exception as e:
                 logger.debug(f"send_action failed: {e}")
@@ -398,7 +405,8 @@ class QQEnhancePlugin(BasePlugin):
             payload = json.dumps({"action": action, "params": params})
             try:
                 await ws.send(payload)
-                logger.debug(f"Typing sent via WebSocket to {session.sid}")
+                if log:
+                    logger.debug(f"Typing sent via WebSocket to {session.sid}")
                 return
             except Exception as e:
                 logger.debug(f"WebSocket send failed: {e}")
@@ -410,7 +418,8 @@ class QQEnhancePlugin(BasePlugin):
                 payload = json.dumps({"action": action, "params": params})
                 try:
                     await ws_attr.send(payload)
-                    logger.debug(f"Typing sent via {attr} to {session.sid}")
+                    if log:
+                        logger.debug(f"Typing sent via {attr} to {session.sid}")
                     return
                 except Exception:
                     continue
@@ -435,12 +444,21 @@ class QQEnhancePlugin(BasePlugin):
             try:
                 await asyncio.sleep(self.typing_interval_seconds)
                 if self._typing_running.get(session, False):
-                    await self._send_typing(session_obj)
+                    await self._send_typing(session_obj, log=False)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.warning(f"Typing loop error for {session}: {e}")
         logger.debug(f"Typing loop stopped for {session}")
+
+    async def _typing_max_timeout(self, session_obj: Session, max_seconds: float):
+        session = session_obj.sid
+        try:
+            await asyncio.sleep(max_seconds)
+            self._stop_typing_loop(session_obj)
+            logger.debug(f"Stopped typing for {session} due to max timeout ({max_seconds}s)")
+        except asyncio.CancelledError:
+            pass
 
     def _stop_typing_loop(self, session_obj: Session):
         session = session_obj.sid
@@ -454,9 +472,29 @@ class QQEnhancePlugin(BasePlugin):
         if session in self._delay_tasks and not self._delay_tasks[session].done():
             self._delay_tasks[session].cancel()
         self._delay_tasks.pop(session, None)
+        # 取消最大时长兜底任务（若当前就在该任务内则只清理引用）
+        max_task = self._max_tasks.pop(session, None)
+        if max_task and not max_task.done() and max_task is not asyncio.current_task():
+            max_task.cancel()
 
-    @on.im_batch_message(priority=Priority.HIGH)
-    async def handle_typing_indication(self, event: KiraMessageBatchEvent):
+    def _start_typing_for_session(self, session_obj: Session):
+        sid = session_obj.sid
+        self._stop_typing_loop(session_obj)
+
+        task = asyncio.create_task(self._delayed_send_typing(session_obj, self.typing_delay_seconds))
+        self._delay_tasks[sid] = task
+        task.add_done_callback(lambda t: self._delay_tasks.pop(sid, None))
+
+        if self.typing_max_seconds > 0:
+            max_task = asyncio.create_task(
+                self._typing_max_timeout(session_obj, self.typing_max_seconds)
+            )
+            self._max_tasks[sid] = max_task
+            max_task.add_done_callback(lambda t: self._max_tasks.pop(sid, None))
+
+    # 在 llm_request 阶段启动（Priority.LOW，晚于限流等插件），避免未真正请求 LLM 时假输入中
+    @on.llm_request(priority=Priority.LOW)
+    async def handle_typing_indication(self, event: KiraMessageBatchEvent, req: LLMRequest, *_):
         if not self.typing_indicator_enabled:
             return
         if event.adapter.platform != "QQ":
@@ -464,16 +502,9 @@ class QQEnhancePlugin(BasePlugin):
         # 只处理私聊
         if event.is_group_message():
             return
-        sid = event.session.sid
-
-        self._stop_typing_loop(event.session)
-
-        if sid in self._delay_tasks and not self._delay_tasks[sid].done():
-            self._delay_tasks[sid].cancel()
-
-        task = asyncio.create_task(self._delayed_send_typing(event.session, self.typing_delay_seconds))
-        self._delay_tasks[sid] = task
-        task.add_done_callback(lambda t: self._delay_tasks.pop(sid, None))
+        if event.is_stopped:
+            return
+        self._start_typing_for_session(event.session)
 
     @on.llm_response(priority=Priority.HIGH)
     async def on_llm_response(self, event: KiraMessageBatchEvent, resp: LLMResponse):
