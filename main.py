@@ -222,6 +222,33 @@ class QQEnhancePlugin(BasePlugin):
         self._max_tasks.clear()
         self._typing_running.clear()
 
+    async def _get_qq_user_name(self, event: KiraMessageEvent, user_id, group_id=None) -> str:
+        """Resolve a QQ user's display name, preferring the group card over the account nickname.
+
+        Returns an empty string when the name cannot be resolved.
+        """
+        if not user_id:
+            return ""
+        try:
+            ada = self.ctx.adapter_mgr.get_adapter(event.adapter.name)
+            client = ada.get_client() if ada else None
+            if not client:
+                return ""
+            if group_id:
+                resp = await client.send_action(
+                    "get_group_member_info",
+                    {"group_id": group_id, "user_id": user_id, "no_cache": False}
+                )
+                data = (resp or {}).get("data") or {}
+                name = data.get("card") or data.get("nickname")
+                if name:
+                    return str(name)
+            resp = await client.get_user_info(user_id=user_id)
+            return str(((resp or {}).get("data") or {}).get("nickname") or "")
+        except Exception as e:
+            logger.warning(f"Failed to resolve QQ user name for {user_id}: {e}")
+            return ""
+
     @on.im_message(priority=Priority.HIGH + 1)
     async def perceive_notice(self, event: KiraMessageEvent):
         """感知QQ特有的notice事件，如群禁言、成员增加等，并将相关信息附加到消息链中，供后续使用"""
@@ -248,12 +275,16 @@ class QQEnhancePlugin(BasePlugin):
             ban_duration = msg.get("duration")
             ban_operator_id = msg.get("operator_id")
             ban_group_id = msg.get("group_id")
+            # Resolve the operator's nickname so the notice is not id-only
+            ban_operator_name = await self._get_qq_user_name(event, ban_operator_id, ban_group_id)
+            operator_text = (f"用户{ban_operator_id}({ban_operator_name})"
+                             if ban_operator_name else f"用户{ban_operator_id}")
             if sub_type == "ban":
-                message_chain.text(f"[System 用户{ban_operator_id}禁言了你{ban_duration}秒]")
+                message_chain.text(f"[System {operator_text}禁言了你{ban_duration}秒]")
 
             elif sub_type == "lift_ban":  # 人为解除禁言
                 # ban_duration 永远是0，invalid
-                message_chain.text(f"[System 你之前被禁言了，用户{ban_operator_id}解除了你的禁言]")
+                message_chain.text(f"[System 你之前被禁言了，{operator_text}解除了你的禁言]")
             else:
                 return
 
