@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import re
 from core.plugin import BasePlugin, PluginContext, logger, on, Priority, register
 from core.chat.message_utils import KiraMessageBatchEvent, KiraMessageEvent
 from core.chat.message_elements import Text, Sticker, Reply
@@ -59,25 +60,44 @@ class SendQQLikesTool(BaseTool):
         if not client:
             return "点赞失败，未找到当前QQ适配器客户端"
 
+        try:
+            times = int(times)
+        except (TypeError, ValueError):
+            return "点赞失败：点赞次数参数无效"
+        if times < 1:
+            return "点赞失败：点赞次数必须大于0"
+
         chunks = [10] * (times // 10) + ([times % 10] if times % 10 else [])
         state = {"likes_count": 0, "fail_msg": ""}
         try:
             await asyncio.wait_for(self._do_send_likes(client, qq, chunks, state), timeout=15)
         except asyncio.TimeoutError:
-            return "点赞超时" + (f"（已点赞 {state['likes_count']} 次）" if state['likes_count'] else "")
+            if state["likes_count"]:
+                # 超时前点出的赞已生效，同样按部分成功上报
+                return f"点赞成功，共点了 {state['likes_count']} 个赞（请求超时中断，未能点满 {times} 个）"
+            return "点赞超时"
         if state["fail_msg"]:
-            return f"点赞失败：{state['fail_msg']}" + (f"（已点赞 {state['likes_count']} 次）" if state['likes_count'] else "")
-        return f"点赞成功，点了 {state['likes_count']} 个赞"
+            if state["likes_count"]:
+                # 部分成功：已点出的赞真实生效（常见于达到每日可赞上限被截断），
+                # 必须以成功口径上报实际数量，否则LLM会误判为一个赞都没点上
+                return f"点赞成功，共点了 {state['likes_count']} 个赞（未能点满 {times} 个：{state['fail_msg']}）"
+            return f"点赞失败：{state['fail_msg']}"
+        return f"点赞成功，共点了 {state['likes_count']} 个赞"
 
     @staticmethod
     async def _do_send_likes(client, qq: str, chunks: list[int], state: dict) -> None:
         for chunk in chunks:
             resp = await client.send_action("send_like", {"user_id": qq, "times": chunk})
-            if resp.get("status") != "ok":
-                state["fail_msg"] = resp.get("message", "未知错误")
-                return
-            state["likes_count"] += chunk
-            await asyncio.sleep(0.1)
+            ok = isinstance(resp, dict) and (resp.get("status") == "ok" or resp.get("retcode") == 0)
+            if ok:
+                state["likes_count"] += chunk
+                await asyncio.sleep(0.1)
+                continue
+            raw = resp.get("message") or resp.get("wording") if isinstance(resp, dict) else str(resp)
+            # NapCat 抛错为"点赞失败 xxx"，去掉前缀避免拼出"点赞失败：点赞失败 xxx"
+            state["fail_msg"] = re.sub(r"^点赞失败[:：\s]*", "", str(raw or "未知错误"))
+            # 每日可赞上限用尽后继续请求必然同样失败，直接终止
+            return
 
 
 class DeleteMsgTool(BaseTool):
