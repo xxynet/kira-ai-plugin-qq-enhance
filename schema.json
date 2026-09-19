@@ -56,7 +56,7 @@
     "sticker_probability": {
         "name": "表情保留概率",
         "type": "float",
-        "default": 0.5,
+        "default": 1.0,
         "minimum": 0,
         "maximum": 1,
         "hint": "每个表情被保留的概率（0~1）。例如 0.3 表示30%的概率保留，70%概率删除。"
